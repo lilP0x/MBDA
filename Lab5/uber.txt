@@ -577,7 +577,10 @@ END;
 --Ciclo2
 
 
---lab5
+------------------------------------lab5--------------------------------------------------
+
+
+
 select * from mbda.DATA;
 
 
@@ -596,6 +599,20 @@ BEGIN
     :NEW.idioma := 'español';
 END;
 
+CREATE OR REPLACE TRIGGER FT_PQRS_INS_TICKED
+BEFORE INSERT ON PQRS
+FOR EACH ROW
+DECLARE 
+    tipo CHAR(1);
+BEGIN 
+    SELECT estado INTO tipo FROM solicitudes
+    WHERE codigo = :NEW.solicitud;
+
+    IF tipo IS NOT NULL THEN
+        :NEW.ticked := tipo || SYSTIMESTAMP; 
+    END IF;
+END;
+
 
 
 CREATE OR REPLACE TRIGGER TR_CLIENTES_INS_CODIGO_FECHA
@@ -608,6 +625,203 @@ END;
 
 INSERT INTO CLIENTES (id_cliente, tipo, numero, nombre, registro, celular, correo, idioma)
 VALUES ('123456789', 'DI', '1234567890', 'Ana Garc a', TO_DATE('2023-10-04', 'YYYY-MM-DD'), 9876543210, 'ana@example.com', 'Espa ol');
+
+
+CREATE OR REPLACE PACKAGE BODY pqrs_package AS
+   PROCEDURE insertar_pqrs(
+      p_ticked      VARCHAR2,
+      p_radicacion  DATE,
+      p_cierre      DATE,
+      p_descripcion VARCHAR2,
+      p_tipo        VARCHAR2,
+      p_estado      VARCHAR2,
+      p_solicitud   NUMBER
+   )IS
+   BEGIN
+      INSERT INTO PQRS (radicacion, cierre, descripcion, tipo, estado, solicitud)
+      VALUES (p_radicacion, p_cierre, p_descripcion, p_tipo, p_estado, p_solicitud);
+   END insertar_pqrs;
+END pqrs_package;
+
+
+
+CREATE OR REPLACE PACKAGE BODY Eliminacion_Paquete AS
+
+  -- Eliminar un conductor por ID
+  PROCEDURE EliminarConductor(p_id_conductor IN VARCHAR2) AS
+  BEGIN
+    DELETE FROM CONDUCTORES WHERE id_conductor = p_id_conductor;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar el conductor ' || p_id_conductor);
+      ROLLBACK;
+  END EliminarConductor;
+
+  -- Eliminar un cliente por ID
+  PROCEDURE EliminarCliente(p_id_cliente IN VARCHAR2) AS
+  BEGIN
+    DELETE FROM CLIENTES WHERE id_cliente = p_id_cliente;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar el cliente ' || p_id_cliente);
+      ROLLBACK;
+  END EliminarCliente;
+
+  -- Eliminar un vehículo por placa
+  PROCEDURE EliminarVehiculo(p_placa IN VARCHAR2) AS
+  BEGIN
+    DELETE FROM VEHICULOS WHERE placa = p_placa;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar el vehículo ' || p_placa);
+      ROLLBACK;
+  END EliminarVehiculo;
+
+  -- Eliminar una tarjeta por número
+  PROCEDURE EliminarTarjeta(p_numero IN NUMBER) AS
+  BEGIN
+    DELETE FROM TARJETAS WHERE numero = p_numero;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar la tarjeta ' || TO_CHAR(p_numero));
+      ROLLBACK;
+  END EliminarTarjeta;
+
+  -- Eliminar una solicitud por código
+  PROCEDURE EliminarSolicitud(p_codigo IN NUMBER) AS
+  BEGIN
+    DELETE FROM SOLICITUDES WHERE codigo = p_codigo;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar la solicitud ' || TO_CHAR(p_codigo));
+      ROLLBACK;
+  END EliminarSolicitud;
+
+  -- Eliminar un PQRS por ticket
+  PROCEDURE EliminarPQRS(p_ticked IN VARCHAR2) AS
+    v_respuestas NUMBER;
+    v_documento_id NUMBER;
+  BEGIN
+    -- Verificar si hay respuestas asociadas
+    SELECT COUNT(*) INTO v_respuestas
+    FROM RESPUESTAS_PQRS
+    WHERE ticket = p_ticked;
+
+    IF v_respuestas = 0 THEN
+      -- Obtener el ID del documento anexo
+      SELECT documento_id INTO v_documento_id
+      FROM DOCUMENTOS_ANEXOS
+      WHERE ticket = p_ticked;
+
+      -- Eliminar el documento anexo
+      IF v_documento_id IS NOT NULL THEN
+        DELETE FROM DOCUMENTOS_ANEXOS WHERE documento_id = v_documento_id;
+      END IF;
+
+      -- Eliminar el PQRS
+      DELETE FROM PQRS WHERE ticked = p_ticked;
+    ELSE
+      DBMS_OUTPUT.PUT_LINE('No se puede eliminar el PQRS ' || p_ticked || ' porque tiene respuestas asociadas.');
+      ROLLBACK;
+    END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar el PQRS ' || p_ticked);
+      ROLLBACK;
+  END EliminarPQRS;
+
+  -- Eliminar un documento anexo por ID
+  PROCEDURE EliminarDocumentoAnexo(p_documento_id IN NUMBER) AS
+  BEGIN
+    DELETE FROM DOCUMENTOS_ANEXOS WHERE documento_id = p_documento_id;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al eliminar el documento anexo con ID ' || TO_CHAR(p_documento_id));
+      ROLLBACK;
+  END EliminarDocumentoAnexo;
+
+END Eliminacion_Paquete;
+/
+
+
+CREATE OR REPLACE PACKAGE BODY Modificacion_Paquete AS
+
+  -- Modificar el estado y, opcionalmente, la fecha de cierre de una PQRS por ticket
+  PROCEDURE ModificarEstadoPQRS(
+    p_ticked IN VARCHAR2,
+    p_nuevo_estado IN VARCHAR2,
+    p_fecha_cierre IN DATE DEFAULT NULL
+  ) AS
+    v_fecha_radicacion DATE;
+  BEGIN
+    -- Verificar si la PQRS existe y obtener la fecha de radicación
+    BEGIN
+      SELECT fecha_radicacion INTO v_fecha_radicacion
+      FROM PQRS
+      WHERE ticked = p_ticked AND estado = 'Abierto';
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('La PQRS con ticket ' || p_ticked || ' no existe o no está abierta.');
+        RETURN;
+    END;
+
+    -- Verificar y actualizar la fecha de cierre si es necesario
+    IF p_fecha_cierre IS NOT NULL AND p_fecha_cierre > v_fecha_radicacion THEN
+      UPDATE PQRS
+      SET estado = p_nuevo_estado,
+          fecha_cierre = p_fecha_cierre
+      WHERE ticked = p_ticked;
+    ELSE
+      UPDATE PQRS
+      SET estado = p_nuevo_estado
+      WHERE ticked = p_ticked;
+    END IF;
+
+    DBMS_OUTPUT.PUT_LINE('PQRS con ticket ' || p_ticked || ' modificada exitosamente.');
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al modificar la PQRS ' || p_ticked);
+      ROLLBACK;
+  END ModificarEstadoPQRS;
+
+  -- Adicionar anexos a una PQRS por ticket
+  PROCEDURE AdicionarAnexosPQRS(
+    p_ticked IN VARCHAR2,
+    p_ruta_anexo IN VARCHAR2
+  ) AS
+  BEGIN
+    -- Verificar si la PQRS existe y está abierta
+    DECLARE
+      v_estado VARCHAR2(50);
+    BEGIN
+      SELECT estado INTO v_estado
+      FROM PQRS
+      WHERE ticked = p_ticked;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('La PQRS con ticket ' || p_ticked || ' no existe.');
+        RETURN;
+    END;
+
+    IF v_estado = 'Abierto' THEN
+      -- Agregar lógica para adicionar anexos a la PQRS
+      -- (puedes implementar esta lógica según la estructura de tu base de datos)
+      DBMS_OUTPUT.PUT_LINE('Anexo adicionado a la PQRS con ticket ' || p_ticked);
+    ELSE
+      DBMS_OUTPUT.PUT_LINE('No se pueden adicionar anexos a una PQRS cerrada o rechazada.');
+    END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      DBMS_OUTPUT.PUT_LINE('Error al adicionar anexo a la PQRS ' || p_ticked);
+      ROLLBACK;
+  END AdicionarAnexosPQRS;
+
+END Modificacion_Paquete;
+/
+
+
+
+
 
 
 select * FROM CLIENTES;
